@@ -1,4 +1,4 @@
-# README: HTTP/1.1 Showcase Server
+# HTTP/1.1 Showcase
 
 ## Overview
 
