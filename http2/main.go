@@ -3,21 +3,44 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/net/http2"
 )
 
+var connectionCounter int32
+
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("Received request: %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+		next.ServeHTTP(w, r)
+	})
+}
+
+func rootHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Host == "" {
+		http.Error(w, "400 Bad Request - Missing Host Header", http.StatusBadRequest)
+		return
+	}
+
+	if w.Header().Get("Connection") == "keep-alive" {
+		w.Header().Set("Connection", "keep-alive")
+	}
+
+	log.Print("Welcome to the HTTP/1.1 Server!")
+}
+
 // Multiplexed streams handler
-func multiplexedHandler(w http.ResponseWriter, _ *http.Request) {
+func multiplexedHandler(_ http.ResponseWriter, _ *http.Request) {
 	// Simulate multiple streams by sending multiple message over the same connection
 	for i := 1; i <= 5; i++ {
-		_, _ = fmt.Fprintf(w, "Message %d from streams\n", i)
+		log.Printf("Message %d from streams\n", i)
 		time.Sleep(500 * time.Millisecond)
 	}
 }
@@ -36,38 +59,60 @@ func headerCompressionHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("X-Header-9", "Value 9")
 	w.Header().Set("X-Header-10", "Value 10")
 
-	_, _ = fmt.Fprintln(w, "Headers added. Check with an HTTP/2 client.")
+	log.Print("Headers added. Check with an HTTP/2 client.")
 }
 
 // Stream priority handler
-func prioritizationHandler(w http.ResponseWriter, r *http.Request) {
+func prioritizationHandler(_ http.ResponseWriter, r *http.Request) {
 	priority := r.URL.Query().Get("priority")
 	switch priority {
 	case "high":
 		time.Sleep(1 * time.Second)
-		_, _ = fmt.Fprintln(w, "High priority stream")
+		log.Print("High priority stream")
 	case "low":
 		time.Sleep(3 * time.Second)
-		_, _ = fmt.Fprintln(w, "Low priority stream")
+		log.Print("Low priority stream")
 	default:
 		time.Sleep(2 * time.Second)
-		_, _ = fmt.Fprintln(w, "Default priority stream")
+		log.Print("Default priority stream")
 	}
-	_, _ = fmt.Fprintln(w, "Stream priority demonstration. Check with an HTTP/2 client.")
+	log.Print("Stream priority demonstration. Check with an HTTP/2 client.")
 }
 
 // Server push handler
-func serverPushHandler(w http.ResponseWriter, _ *http.Request) {
+func serverPushHandler(w http.ResponseWriter, r *http.Request) {
 	if pusher, ok := w.(http.Pusher); ok {
-		// Push related resources
-		if err := pusher.Push("https://localhost:8443/style.css", nil); err != nil {
-			fmt.Println("Failed to push style.css. Error: ", err)
+		pushOptions := http.PushOptions{
+			Method: r.Method,
+			Header: r.Header,
 		}
-		if err := pusher.Push("https://localhost:8443/script.js", nil); err != nil {
-			fmt.Println("Failed to push script.js. Error: ", err)
+		// Push related resources
+		if err := pusher.Push("/style.css", &pushOptions); err != nil {
+			log.Printf("Failed to push style.css. Error: %v", err)
+		}
+		if err := pusher.Push("/script.js", &pushOptions); err != nil {
+			log.Printf("Failed to push script.js. Error: %v", err)
 		}
 	}
-	_, _ = fmt.Fprintln(w, "Stream priority demonstration. Check for pushed resources. Check with an HTTP/2 client.")
+	log.Print("Stream priority demonstration. Check for pushed resources. Check with an HTTP/2 client.")
+}
+
+func connectionStateHandler(networkConnection net.Conn, state http.ConnState) {
+	switch state {
+	case http.StateNew:
+		atomic.AddInt32(&connectionCounter, 1)
+		log.Printf("New connection established.")
+	case http.StateIdle:
+		log.Printf("Connection is idle.")
+	case http.StateClosed:
+		atomic.AddInt32(&connectionCounter, -1)
+		log.Printf("Connection closed.")
+	case http.StateActive:
+		log.Printf("Connection is active.")
+	case http.StateHijacked:
+		log.Printf("Connection hijacked.")
+	}
+	log.Printf("Active connections: %v. Remote address: %v.", atomic.LoadInt32(&connectionCounter), networkConnection.RemoteAddr())
 }
 
 func main() {
@@ -76,14 +121,18 @@ func main() {
 	mux.Handle("/style.css", fs)
 	mux.Handle("/script.js", fs)
 
+	mux.HandleFunc("/", rootHandler)
 	mux.HandleFunc("/multiplex", multiplexedHandler)
 	mux.HandleFunc("/headers", headerCompressionHandler)
 	mux.HandleFunc("/priority", prioritizationHandler)
 	mux.HandleFunc("/push", serverPushHandler)
 
+	loggedMux := loggingMiddleware(mux)
+
 	server := &http.Server{
-		Addr:    ":8443",
-		Handler: mux,
+		Addr:      ":8443",
+		Handler:   loggedMux,
+		ConnState: connectionStateHandler,
 	}
 
 	h2Config := &http2.Server{}
