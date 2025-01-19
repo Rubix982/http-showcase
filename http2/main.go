@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -86,12 +88,17 @@ func serverPushHandler(w http.ResponseWriter, r *http.Request) {
 			Method: r.Method,
 			Header: r.Header,
 		}
-		// Push related resources
-		if err := pusher.Push("/style.css", &pushOptions); err != nil {
-			log.Printf("Failed to push style.css. Error: %v", err)
-		}
-		if err := pusher.Push("/script.js", &pushOptions); err != nil {
-			log.Printf("Failed to push script.js. Error: %v", err)
+		for _, file := range []string{"static/style.css", "static/script.js"} {
+			_, err := os.Stat(file)
+			if err != nil {
+				log.Fatalf("%s not found: %v", file, err)
+			}
+			if !strings.HasPrefix(file, "/") {
+				file = fmt.Sprintf("/%v", file)
+			}
+			if err = pusher.Push(file, &pushOptions); err != nil {
+				log.Printf("Failed to push %s. Error: %v", file, err)
+			}
 		}
 	}
 	log.Print("Stream priority demonstration. Check for pushed resources. Check with an HTTP/2 client.")
@@ -117,9 +124,7 @@ func connectionStateHandler(networkConnection net.Conn, state http.ConnState) {
 
 func main() {
 	mux := http.NewServeMux()
-	fs := http.FileServer(http.Dir("static"))
-	mux.Handle("/style.css", fs)
-	mux.Handle("/script.js", fs)
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
 
 	mux.HandleFunc("/", rootHandler)
 	mux.HandleFunc("/multiplex", multiplexedHandler)
