@@ -82,6 +82,10 @@ func prioritizationHandler(_ http.ResponseWriter, r *http.Request) {
 }
 
 // Server push handler
+// !!!!!!!!!
+// This logic is currently not working. Accessing it via the browser provides the error that the feature is not supported.
+// Using curl with `curl -k --http2 -v https://localhost:8443/push` shows that the feature is not supported.
+// Either it is because this feature is not supported or adopted well. I cannot find any other reason for this.
 func serverPushHandler(w http.ResponseWriter, r *http.Request) {
 	if pusher, ok := w.(http.Pusher); ok {
 		pushOptions := http.PushOptions{
